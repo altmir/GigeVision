@@ -41,6 +41,8 @@ namespace GenICam
 
         #endregion XML Setup
 
+        public Dictionary<string, IPValue> RegisterDictionary { get; private set; } = new();
+
         /// <summary>
         /// Initializes a new instance of the <see cref="XmlHelper"/> class.
         /// </summary>
@@ -115,6 +117,33 @@ namespace GenICam
             catch (Exception ex)
             {
                 throw new GenICamException("Failed to read category feature", ex);
+            }
+        }
+
+        public async Task LoadRegisterDictionaryAsync()
+        {
+            if (RegisterDictionary.Count > 0)
+                return;
+
+            var nodes = xmlDocument.SelectNodes("//Category | //Float | //Integer | //IntReg | //MaskedIntReg | //StructReg | //StructEntry | //StringReg");
+            if (nodes == null) return;
+
+            foreach (XmlNode node in nodes)
+            {
+                string name = node.Attributes?["Name"]?.Value;
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                try
+                {
+                    IPValue pval = await GetRegister(node);
+                    RegisterDictionary.TryAdd(name, pval);
+                }
+                catch (Exception ex)
+                {
+                    // Optionally log or debug
+                    // Console.WriteLine($"Failed to load raw register '{name}': {ex.Message}");
+                }
             }
         }
 
@@ -369,7 +398,7 @@ namespace GenICam
                 XmlNode pNode;
                 IPValue pMin = null;
                 IPValue pMax = null;
-
+                
                 foreach (XmlNode node in xmlNode.ChildNodes)
                 {
                     switch (node.Name)
@@ -412,10 +441,14 @@ namespace GenICam
                             pNode = ReadPNode(node.InnerText);
                             if (pNode != null)
                             {
-                                if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
+                                if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                                {
+                                    pValue = await GetRegister(pNode);
+                                }
+                                else if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
                                 {
                                     pValue = await GetFormula(pNode);
-                                }
+                                } 
                                 else if (pNode.Attributes["Name"].Value.EndsWith("_Float") || pNode.Attributes["Name"].Value.EndsWith("_Int") || pNode.Attributes["Name"].Value.EndsWith("_Bit"))
                                 {
                                     var register = await GetRegisterByName(pNode.Attributes["Name"].Value).ConfigureAwait(false);
@@ -425,10 +458,6 @@ namespace GenICam
                                         pMin = register.PMin;
                                         pMax = register.PMax;
                                     }
-                                }
-                                else if (Enum.GetNames<RegisterType>().Contains(pNode.Name))
-                                {
-                                    pValue = await GetRegister(pNode);
                                 }
                             }
 
@@ -469,7 +498,11 @@ namespace GenICam
                     XmlNode pNode = ReadPNode(pValueNode.InnerText);
                     if (pNode != null)
                     {
-                        if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
+                        if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                        {
+                            pValue = await GetRegister(pNode);
+                        }
+                        else if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
                         {
                             pValue = await GetFormula(pNode);
                         }
@@ -478,12 +511,8 @@ namespace GenICam
                             var register = await GetRegisterByName(pNode.Attributes["Name"].Value).ConfigureAwait(false);
                             if (register != null)
                             {
-                                pValue = register.PValue;
+                                pValue = register.PValue;   
                             }
-                        }
-                        else if (Enum.GetNames<RegisterType>().Contains(pNode.Name))
-                        {
-                            pValue = await GetRegister(pNode);
                         }
                     }
                 }
@@ -544,7 +573,11 @@ namespace GenICam
                     var pNode = ReadPNode(enumPValue.InnerText);
                     if (pNode != null)
                     {
-                        if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
+                        if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                        {
+                            pValue = await GetRegister(pNode);
+                        }
+                        else if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
                         {
                             pValue = await GetFormula(pNode);
                         }
@@ -555,10 +588,6 @@ namespace GenICam
                             {
                                 pValue = register.PValue;
                             }
-                        }
-                        else if (Enum.GetNames<RegisterType>().Contains(pNode.Name))
-                        {
-                            pValue = await GetRegister(pNode);
                         }
                     }
                 }
@@ -732,7 +761,11 @@ namespace GenICam
             IPValue pValue = null;
             if (pNode != null)
             {
-                if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
+                if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                {
+                    pValue = await GetRegister(pNode);
+                }
+                else if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
                 {
                     pValue = await GetFormula(pNode);
                 }
@@ -743,10 +776,6 @@ namespace GenICam
                     {
                         pValue = register.PValue;
                     }
-                }
-                else if (Enum.GetNames<RegisterType>().Contains(pNode.Name) || pNode.ParentNode.Name == nameof(RegisterType.StructReg))
-                {
-                    pValue = await GetRegister(pNode);
                 }
             }
 
@@ -773,7 +802,11 @@ namespace GenICam
 
                 if (pNode != null)
                 {
-                    if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
+                    if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                    {
+                        pValue = await GetRegister(pNode);
+                    }
+                    else if (pNode.Attributes["Name"].Value.EndsWith("Expr") || pNode.Attributes["Name"].Value.EndsWith("Conv"))
                     {
                         pValue = await GetFormula(pNode);
                     }
@@ -782,12 +815,8 @@ namespace GenICam
                         var register = await GetRegisterByName(pNode.Attributes["Name"].Value).ConfigureAwait(false);
                         if (register != null)
                         {
-                            pValue = register.PValue;
+                            pValue = register.PValue;   
                         }
-                    }
-                    else if (Enum.GetNames<RegisterType>().Contains(pNode.Name))
-                    {
-                        pValue = await GetRegister(pNode);
                     }
                 }
 
@@ -799,87 +828,280 @@ namespace GenICam
             }
         }
 
+        //private async Task<IPValue> GetRegister(XmlNode xmlNode)
+        //{
+        //    try
+        //    {
+        //        XmlNode structEntryNode = null;
+        //        if (xmlNode.ParentNode.Name == nameof(RegisterType.StructReg))
+        //        {
+        //            structEntryNode = xmlNode.Clone();
+        //            xmlNode = xmlNode.ParentNode;
+        //        }
+
+        //        if (!Enum.GetNames<RegisterType>().Where(x => x.Equals(xmlNode.Name) && x != "StructEntry").Any())
+        //        {
+        //            throw new GenICamException(message: $"Failed to find GenRegister type by the given node name {xmlNode.Name}", new NotImplementedException());
+        //        }
+
+        //        if (xmlNode.Name == nameof(RegisterType.Integer))
+        //        {
+        //            return await GetGenInteger(xmlNode);
+        //        }
+        //        else if (xmlNode.Name == nameof(RegisterType.Float))
+        //        {
+        //            return await GetFloatCategory(xmlNode) as IPValue;
+        //        }
+
+        //        var genRegister = await XmlNodeToGenRegister(xmlNode);
+
+        //        switch (xmlNode.Name)
+        //        {
+        //            case nameof(RegisterType.IntReg):
+        //            case nameof(RegisterType.FloatReg):
+        //                return new GenIntReg(genRegister.address, genRegister.length, genRegister.accessMode, null, genRegister.pAddress, GenPort);
+
+        //            case nameof(RegisterType.IntConverter):
+        //               return await GetConverter(xmlNode);
+
+        //            case nameof(RegisterType.StructReg):
+        //            case nameof(RegisterType.MaskedIntReg):
+        //                if (xmlNode.Name.Equals(nameof(RegisterType.StructReg)))
+        //                {
+        //                    xmlNode = structEntryNode;
+        //                }
+
+        //                short? lsb = null, msb = null;
+        //                byte? bit = null;
+        //                var lsbNode = SelectSingleNode(xmlNode, "LSB");
+        //                var msbNode = SelectSingleNode(xmlNode, "MSB");
+        //                var bitNode = SelectSingleNode(xmlNode, "Bit");
+
+        //                if (lsbNode != null)
+        //                {
+        //                    lsb = short.Parse(lsbNode.InnerText);
+        //                }
+
+        //                if (msbNode != null)
+        //                {
+        //                    msb = short.Parse(msbNode.InnerText);
+        //                }
+
+        //                if (bitNode != null)
+        //                {
+        //                    bit = byte.Parse(bitNode.InnerText);
+        //                }
+
+        //                var signNode = SelectSingleNode(xmlNode, "Sign");
+        //                Sign? sign = null;
+        //                if (signNode != null)
+        //                {
+        //                    sign = Enum.Parse<Sign>(signNode.InnerText);
+        //                }
+
+        //                return new GenMaskedIntReg(genRegister.address, genRegister.length, msb, lsb, bit, sign, genRegister.accessMode, genRegister.pAddress, GenPort);
+        //        }
+
+        //        throw new GenICamException(message: $"Failed to find GenRegister type by the given node name {xmlNode.Name}", new NotImplementedException());
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        throw new GenICamException($"Failed to get Register by the given node {xmlNode.Name}", ex);
+        //    }
+        //}
+
+        //private async Task<IPValue> GetRegister(XmlNode xmlNode)
+        //{
+        //    try
+        //    {
+        //        if (!Enum.TryParse(xmlNode.Name, out RegisterType type))
+        //        {
+        //            throw new GenICamException($"Unrecognized register type: {xmlNode.Name}", new NotImplementedException());
+        //        }
+
+        //        switch (type)
+        //        {
+        //            case RegisterType.Integer:
+        //                return await GetGenInteger(xmlNode);
+
+        //            case RegisterType.Float:
+        //                {
+        //                    var value = await GetFloatCategory(xmlNode);
+        //                    return value as IPValue ?? throw new InvalidCastException("Float category is not an IPValue.");
+        //                }
+
+        //            case RegisterType.IntReg:
+        //            case RegisterType.FloatReg:
+        //                {
+        //                    var reg = await XmlNodeToGenRegister(xmlNode);
+        //                    return new GenIntReg(reg.address, reg.length, reg.accessMode, null, reg.pAddress, GenPort);
+        //                }
+
+        //            case RegisterType.IntConverter:
+        //                return await GetConverter(xmlNode);
+
+        //            case RegisterType.StructReg:
+        //            case RegisterType.MaskedIntReg:
+        //                {
+        //                    var reg = await XmlNodeToGenRegister(xmlNode);
+        //                    var lsbNode = SelectSingleNode(xmlNode, "LSB");
+        //                    var msbNode = SelectSingleNode(xmlNode, "MSB");
+        //                    var bitNode = SelectSingleNode(xmlNode, "Bit");
+        //                    var signNode = SelectSingleNode(xmlNode, "Sign");
+
+        //                    short? lsb = lsbNode != null ? short.Parse(lsbNode.InnerText) : null;
+        //                    short? msb = msbNode != null ? short.Parse(msbNode.InnerText) : null;
+        //                    byte? bit = bitNode != null ? byte.Parse(bitNode.InnerText) : null;
+        //                    Sign? sign = signNode != null ? Enum.Parse<Sign>(signNode.InnerText) : null;
+
+        //                    return new GenMaskedIntReg(reg.address, reg.length, msb, lsb, bit, sign, reg.accessMode, reg.pAddress, GenPort);
+        //                }
+
+        //            default:
+        //                throw new GenICamException($"Unsupported register type: {xmlNode.Name}", new NotImplementedException());
+        //        }
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        throw new GenICamException($"Failed to get Register by the given node {xmlNode.Name}", ex);
+        //    }
+        //}
+
+        /// <summary>
+        /// Asynchronously resolves an IPValue from a given XML node, based on its register type.
+        /// </summary>
         private async Task<IPValue> GetRegister(XmlNode xmlNode)
         {
             try
             {
-                XmlNode structEntryNode = null;
-                if (xmlNode.ParentNode.Name == nameof(RegisterType.StructReg))
+                if (!Enum.TryParse(xmlNode.Name, out RegisterType type))
+                    throw new GenICamException($"Unrecognized register type: {xmlNode.Name}", new NotImplementedException());
+
+                if (type == RegisterType.StructEntry)
                 {
-                    structEntryNode = xmlNode.Clone();
-                    xmlNode = xmlNode.ParentNode;
+                    var name = xmlNode.Attributes?["Name"]?.Value ?? "UnnamedEntry";
+                    var length = ushort.Parse(xmlNode.SelectSingleNode("Length")?.InnerText ?? "0");
+                    var lsb = short.Parse(xmlNode.SelectSingleNode("LSB")?.InnerText ?? "0");
+                    var msb = short.Parse(xmlNode.SelectSingleNode("MSB")?.InnerText ?? "0");
+
+                    // You may also extract access mode, signedness, etc.
+                    return new GenStructEntry(name, lsb, msb, length);
                 }
 
-                if (!Enum.GetNames<RegisterType>().Where(x => x.Equals(xmlNode.Name) && x != "StructEntry").Any())
+                switch (type)
                 {
-                    throw new GenICamException(message: $"Failed to find GenRegister type by the given node name {xmlNode.Name}", new NotImplementedException());
-                }
+                    case RegisterType.Integer:
+                        return await GetGenInteger(xmlNode);
 
-                if (xmlNode.Name == nameof(RegisterType.Integer))
-                {
-                    return await GetGenInteger(xmlNode);
-                }
-                else if (xmlNode.Name == nameof(RegisterType.Float))
-                {
-                    return await GetFloatCategory(xmlNode) as IPValue;
-                }
+                    case RegisterType.Float:
+                        return await GetFloatCategory(xmlNode) as IPValue ?? throw new InvalidCastException("Failed to cast FloatCategory to IPValue");
 
-                var genRegister = await XmlNodeToGenRegister(xmlNode);
-
-                switch (xmlNode.Name)
-                {
-                    case nameof(RegisterType.IntReg):
-                    case nameof(RegisterType.FloatReg):
-                        return new GenIntReg(genRegister.address, genRegister.length, genRegister.accessMode, null, genRegister.pAddress, GenPort);
-
-                    case nameof(RegisterType.IntConverter):
+                    case RegisterType.IntConverter:
                         return await GetConverter(xmlNode);
 
-                    case nameof(RegisterType.StructReg):
-                    case nameof(RegisterType.MaskedIntReg):
-                        if (xmlNode.Name.Equals(nameof(RegisterType.StructReg)))
+                    case RegisterType.IntReg:
+                    case RegisterType.FloatReg:
                         {
-                            xmlNode = structEntryNode;
+                            var (address, pAddress, length, accessMode) = await XmlNodeToGenRegister(xmlNode);
+                            return new GenIntReg(address, length, accessMode, null, pAddress, GenPort);
                         }
 
-                        short? lsb = null, msb = null;
-                        byte? bit = null;
-                        var lsbNode = SelectSingleNode(xmlNode, "LSB");
-                        var msbNode = SelectSingleNode(xmlNode, "MSB");
-                        var bitNode = SelectSingleNode(xmlNode, "Bit");
-
-                        if (lsbNode != null)
+                    case RegisterType.StructReg:
                         {
-                            lsb = short.Parse(lsbNode.InnerText);
+                            var reg = await XmlNodeToGenRegister(xmlNode);
+                            var categoryProps = await XmlNodeToCategoryProperties(xmlNode);
+
+                            // Parse StructEntry children
+                            var entries = new List<GenStructEntry>();
+                            foreach (XmlNode child in xmlNode.SelectNodes("StructEntry")!)
+                            {
+                                if (await GetRegister(child) is GenStructEntry entry)
+                                    entries.Add(entry);
+                            }
+
+                            return new GenStructReg(categoryProps, reg.address ?? 0, reg.length, reg.accessMode, GenPort, entries);
                         }
 
-                        if (msbNode != null)
+                    case RegisterType.MaskedIntReg:
                         {
-                            msb = short.Parse(msbNode.InnerText);
+                            var (address, pAddress, length, accessMode) = await XmlNodeToGenRegister(xmlNode);
+
+                            short? lsb = TryParseShort(SelectSingleNode(xmlNode, "LSB"));
+                            short? msb = TryParseShort(SelectSingleNode(xmlNode, "MSB"));
+                            byte? bit = TryParseByte(SelectSingleNode(xmlNode, "Bit"));
+                            Sign? sign = TryParseEnum<Sign>(SelectSingleNode(xmlNode, "Sign"));
+
+                            return new GenMaskedIntReg(address, length, msb, lsb, bit, sign, accessMode, pAddress, GenPort);
                         }
 
-                        if (bitNode != null)
+                    case RegisterType.StringReg:
                         {
-                            bit = byte.Parse(bitNode.InnerText);
+                            var reg = await XmlNodeToGenRegister(xmlNode);
+                            var categoryProps = await XmlNodeToCategoryProperties(xmlNode);
+
+                            var pValueNode = SelectSingleNode(xmlNode, "pValue");
+                            IPValue? pValue = null;
+
+                            if (pValueNode != null)
+                            {
+                                pValue = await GetRegister(pValueNode);
+                            }
+                            //else
+                            //{
+                            //    _logger?.LogWarning("No <pValue> node found in StringReg '{Name}', continuing with null.", categoryProps.Name);
+                            //}
+
+                            return new GenStringRegWrapper(new GenStringReg(categoryProps, reg.address ?? 0, reg.length, reg.accessMode, GenPort, pValue));
                         }
 
-                        var signNode = SelectSingleNode(xmlNode, "Sign");
-                        Sign? sign = null;
-                        if (signNode != null)
-                        {
-                            sign = Enum.Parse<Sign>(signNode.InnerText);
-                        }
 
-                        return new GenMaskedIntReg(genRegister.address, genRegister.length, msb, lsb, bit, sign, genRegister.accessMode, genRegister.pAddress, GenPort);
+                    default:
+                        throw new GenICamException($"Unsupported register type: {type}", new NotImplementedException());
                 }
-
-                throw new GenICamException(message: $"Failed to find GenRegister type by the given node name {xmlNode.Name}", new NotImplementedException());
             }
             catch (Exception ex)
             {
                 throw new GenICamException($"Failed to get Register by the given node {xmlNode.Name}", ex);
             }
         }
+
+        /// <summary>
+        /// Converts an XmlNode into a CategoryProperties object.
+        /// This function is async to match broader async flow, although the result is immediate.
+        /// </summary>
+        private Task<CategoryProperties> XmlNodeToCategoryProperties(XmlNode xmlNode)
+        {
+            string rootName = xmlNode.ParentNode?.Name ?? "Root";
+            string name = xmlNode.Attributes?["Name"]?.Value ?? "Unnamed";
+            string toolTip = xmlNode.SelectSingleNode("ToolTip")?.InnerText ?? string.Empty;
+            string description = xmlNode.SelectSingleNode("Description")?.InnerText ?? string.Empty;
+            string visibilityText = xmlNode.SelectSingleNode("Visibility")?.InnerText ?? "Beginner";
+            bool isStreamable = string.Equals(xmlNode.SelectSingleNode("IsStreamable")?.InnerText, "true", StringComparison.OrdinalIgnoreCase);
+
+            GenVisibility visibility = Enum.TryParse(visibilityText, out GenVisibility parsedVisibility)
+                ? parsedVisibility
+                : GenVisibility.Beginner;
+
+            var props = new CategoryProperties(rootName, name, toolTip, description, visibility, isStreamable);
+
+            return Task.FromResult(props); // already computed, but keeps method async
+        }
+
+        private XmlNode? FindNodeByName(string name)
+        {
+            // Traverse your loaded document and return the first node with matching Name attribute
+            return xmlDocument?.SelectSingleNode($"//*[@Name='{name}']");
+        }
+
+        private static short? TryParseShort(XmlNode node) =>
+            node != null && short.TryParse(node.InnerText, out var val) ? val : null;
+
+        private static byte? TryParseByte(XmlNode node) =>
+            node != null && byte.TryParse(node.InnerText, out var val) ? val : null;
+
+        private static T? TryParseEnum<T>(XmlNode node) where T : struct =>
+            node != null && Enum.TryParse(node.InnerText, out T val) ? val : null;
+
 
         private async Task<(long? address, object pAddress, ushort length, GenAccessMode accessMode)> XmlNodeToGenRegister(XmlNode xmlNode)
         {
@@ -977,7 +1199,11 @@ namespace GenICam
                             var pNode = ReadPNode(node.InnerText);
                             if (pNode != null)
                             {
-                                if (pNode.Attributes["Name"].Value.EndsWith("Expr"))
+                                if (pNode.Attributes["Name"].Value.EndsWith("Reg") || pNode.Attributes["Name"].Value.EndsWith("Val"))
+                                {
+                                    pValue = await GetRegister(pNode);
+                                }
+                                else if (pNode.Attributes["Name"].Value.EndsWith("Expr"))
                                 {
                                     pValue = await GetIntSwissKnife(pNode);
                                 }
@@ -990,12 +1216,8 @@ namespace GenICam
                                     var register = await GetRegisterByName(pNode.Attributes["Name"].Value).ConfigureAwait(false);
                                     if (register != null)
                                     {
-                                        pValue = register.PValue;
+                                        pValue = register.PValue;   
                                     }
-                                }
-                                else if (Enum.GetNames<RegisterType>().Contains(pNode.Name))
-                                {
-                                    pValue = await GetRegister(pNode);
                                 }
                             }
 

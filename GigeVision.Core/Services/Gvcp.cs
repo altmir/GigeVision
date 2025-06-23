@@ -299,6 +299,45 @@ namespace GigeVision.Core.Services
         /// </summary>
         /// <param name="cameraIp">Camera IP</param>
         /// <returns>Register dictionary</returns>
+        //public async Task ReadAllRegisterAddressFromCameraAsync(string cameraIp)
+        //{
+        //    try
+        //    {
+        //        IsLoadingXml = true;
+
+        //        if (!ValidateIp(cameraIp)) throw new InvalidIpException();
+
+        //        //loading the XML file
+        //        XmlDocument xml = new XmlDocument();
+        //        xml.Load(await GetXmlFileFromCamera(cameraIp).ConfigureAwait(false));
+        //        var xmlHelper = new XmlHelper(xml, new GenPort(this));
+        //        await xmlHelper.LoadUp(true);
+        //        CategoryDictionary = xmlHelper.CategoryDictionary;
+
+        //        if (xmlHelper.CategoryDictionary != null)
+        //        {
+        //            if (xmlHelper.CategoryDictionary.Count > 0)
+        //            {
+        //                RegistersDictionary = new Dictionary<string, (IPValue, IRegister)>();
+        //                await ReadAllRegisters(CategoryDictionary);
+        //            }
+        //        };
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        throw ex;
+        //    }
+        //    finally
+        //    {
+        //        IsLoadingXml = false;
+        //    }
+        //}
+
+        /// <summary>
+        /// Reads all register of camera
+        /// </summary>
+        /// <param name="cameraIp">Camera IP</param>
+        /// <returns>Register dictionary</returns>
         public async Task ReadAllRegisterAddressFromCameraAsync(string cameraIp)
         {
             try
@@ -307,21 +346,32 @@ namespace GigeVision.Core.Services
 
                 if (!ValidateIp(cameraIp)) throw new InvalidIpException();
 
-                //loading the XML file
+                // Initialize the dictionary here to prevent nulls
+                RegistersDictionary = new Dictionary<string, (IPValue, IRegister)>();
+
+                // Step 1: Load from XML
                 XmlDocument xml = new XmlDocument();
                 xml.Load(await GetXmlFileFromCamera(cameraIp).ConfigureAwait(false));
                 var xmlHelper = new XmlHelper(xml, new GenPort(this));
-                await xmlHelper.LoadUp();
+
+
+                // Step 2: Parse categories
+                await xmlHelper.LoadUp(true);
                 CategoryDictionary = xmlHelper.CategoryDictionary;
 
-                if (xmlHelper.CategoryDictionary != null)
+                var categoryRegisters = new Dictionary<string, (IPValue, IRegister)>();
+                if (CategoryDictionary?.Count > 0)
                 {
-                    if (xmlHelper.CategoryDictionary.Count > 0)
-                    {
-                        RegistersDictionary = new Dictionary<string, (IPValue, IRegister)>();
-                        await ReadAllRegisters(CategoryDictionary);
-                    }
-                };
+                    await ReadAllRegisters(CategoryDictionary);
+                    categoryRegisters = RegistersDictionary; // this was filled by ReadAllRegisters
+                }
+
+                // Step 3: Merge both sources
+                var merged = await MergeRegistersAsync(xmlHelper, categoryRegisters);
+
+                // Step 4: Set the final dictionary
+                RegistersDictionary = merged.ToDictionary(x => x.Key, x => (x.Value.Value, x.Value.Register));
+
             }
             catch (Exception ex)
             {
@@ -332,6 +382,44 @@ namespace GigeVision.Core.Services
                 IsLoadingXml = false;
             }
         }
+
+        /// <summary>
+        /// Merges registers parsed from CategoryDictionary and raw XML nodes into RegistersDictionary.
+        /// Ensures all registers are accounted for and logs their origin.
+        /// </summary>
+        /// <param name="xmlHelper">The XmlHelper used to load and parse the XML.</param>
+        /// <param name="categoryRegisters">Registers loaded via ReadAllRegisters from categories.</param>
+        /// <returns>A complete merged dictionary with register name and its source (Category or RawXML).</returns>
+        private async Task<Dictionary<string, (IPValue Value, IRegister Register, string Source)>> MergeRegistersAsync(
+            XmlHelper xmlHelper,
+            Dictionary<string, (IPValue Value, IRegister Register)> categoryRegisters)
+        {
+            var merged = new Dictionary<string, (IPValue, IRegister, string)>();
+
+            // Add all from category-based
+            foreach (var kvp in categoryRegisters)
+            {
+                merged[kvp.Key] = (kvp.Value.Value, kvp.Value.Register, "Category");
+            }
+
+            // Ensure raw dictionary is loaded
+            if (xmlHelper.RegisterDictionary == null || xmlHelper.RegisterDictionary.Count == 0)
+            {
+                await xmlHelper.LoadRegisterDictionaryAsync();
+            }
+
+            // Add missing entries from raw XML scan
+            foreach (var kvp in xmlHelper.RegisterDictionary)
+            {
+                if (!merged.ContainsKey(kvp.Key))
+                {
+                    merged[kvp.Key] = (kvp.Value, kvp.Value as IRegister, "RawXML");
+                }
+            }
+
+            return merged;
+        }
+
 
         /// <summary>
         /// Reads all register of camera
@@ -847,87 +935,6 @@ namespace GigeVision.Core.Services
             return (fileName, fileAddress, fileLength);
         }
 
-        private async Task<(byte[] data, string fileName)> GetRawXmlFileFromCamera(string IP)
-        {
-            return await Task.Run(() =>
-            {
-                UdpClient client = new UdpClient();
-                client.Client.ReceiveTimeout = 1000;
-                //connecting to the server
-                client.Connect(IP, PortGvcp);
-
-                byte[] commandCCP = new byte[] { 0x42, 0x00, 0x00, 0x82, 0x00, 0x08, 0x10, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x02 };
-
-                //sending the packet
-                //  client.Send(commandCCP, commandCCP.Length);
-                Task.Delay(100);
-                //preparing the header for sending
-
-                byte[] gvcpHeader = GetReadMessageHeader(0x0200); //GevFirstURL = 0x0200
-
-                //sending the packet
-                client.Send(gvcpHeader, gvcpHeader.Length);
-                gvcpRequestID++;
-
-                int packetSize = 512 + 24; //512 for the original payload size and 24  for  the header
-                byte[] count = { 0x02, 0x18 }; //Number of bytes to read from device memory it must be multiple of 4 bytes
-
-                IPEndPoint server = new IPEndPoint(IPAddress.Parse(IP), PortGvcp);
-                byte[] recivedData = client.Receive(ref server);
-                if (recivedData.Length < 12) throw new Exception("Access denied");
-                string localFile = Encoding.ASCII.GetString(recivedData, 12, recivedData.Length - 12);
-
-                var (fileName, fileAddress, fileLength) = GetFileDetails(localFile);
-
-                //finding the last packet length
-                var lastPacket = (fileLength % packetSize);
-
-                if (lastPacket % 4 != 0)
-                {
-                    fileLength -= lastPacket;
-                    double tempLastPcaket = ((double)lastPacket / 4);
-                    lastPacket = (int)(Math.Ceiling(tempLastPcaket) * 4);
-                    fileLength += lastPacket;
-                }
-                byte[] encodedZipFile = new byte[fileLength];
-
-                if (recivedData[0] == (byte)0x00)
-                {
-                    for (int i = 0; i < fileLength; i += packetSize)
-                    {
-                        count = i == (fileLength - lastPacket) ? BitConverter.GetBytes(lastPacket) : BitConverter.GetBytes(packetSize);
-
-                        byte[] requestID = BitConverter.GetBytes(gvcpRequestID);
-                        byte[] tempFileAddress = BitConverter.GetBytes(fileAddress + i);
-
-                        if (BitConverter.IsLittleEndian)
-                        {
-                            Array.Reverse(tempFileAddress);
-                            Array.Reverse(requestID);
-                            Array.Reverse(count);
-                        }
-
-                        byte[] readFileHeader = { 0x42, 0x01, 0x00, 0x84, 0x00, 0x08,
-                                requestID[0], requestID[1],
-                                tempFileAddress[0], tempFileAddress[1], tempFileAddress[2], tempFileAddress[3],
-                                count[0], count[1], count[2], count[3] };
-                        client.Send(readFileHeader, readFileHeader.Length);
-
-                        recivedData = client.Receive(ref server);
-
-                        if (recivedData[0] == (byte)0x00)
-                        {
-                            Array.Copy(recivedData, 12, encodedZipFile, i, recivedData.Length - 12);
-                            gvcpRequestID++;
-                        }
-                        else
-                            break;
-                    }
-                }
-                return (encodedZipFile, fileName);
-            }).ConfigureAwait(false);
-        }
-
         private byte[] GetReadMessageHeader(int register)
         {
             //converting register and requestID into bytes
@@ -946,6 +953,207 @@ namespace GigeVision.Core.Services
             return gvcpHeader;
         }
 
+        //private async Task<(byte[] data, string fileName)> GetRawXmlFileFromCamera(string IP)
+        //{
+        //    return await Task.Run(() =>
+        //    {
+        //        UdpClient client = new UdpClient();
+        //        client.Client.ReceiveTimeout = 1000;
+        //        //connecting to the server
+        //        client.Connect(IP, PortGvcp);
+
+        //        byte[] commandCCP = new byte[] { 0x42, 0x00, 0x00, 0x82, 0x00, 0x08, 0x10, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x02 };
+
+        //        //sending the packet
+        //        //  client.Send(commandCCP, commandCCP.Length);
+        //        Task.Delay(100);
+        //        //preparing the header for sending
+
+        //        byte[] gvcpHeader = GetReadMessageHeader(0x0200); //GevFirstURL = 0x0200
+
+        //        //sending the packet
+        //        client.Send(gvcpHeader, gvcpHeader.Length);
+        //        gvcpRequestID++;
+
+        //        int packetSize = 512 + 24; //512 for the original payload size and 24  for  the header
+        //        byte[] count = { 0x02, 0x18 }; //Number of bytes to read from device memory it must be multiple of 4 bytes
+
+        //        IPEndPoint server = new IPEndPoint(IPAddress.Parse(IP), PortGvcp);
+        //        byte[] recivedData = client.Receive(ref server);
+        //        if (recivedData.Length < 12) throw new Exception("Access denied");
+        //        string localFile = Encoding.ASCII.GetString(recivedData, 12, recivedData.Length - 12);
+
+        //        var (fileName, fileAddress, fileLength) = GetFileDetails(localFile);
+
+        //        //finding the last packet length
+        //        var lastPacket = (fileLength % packetSize);
+
+        //        if (lastPacket % 4 != 0)
+        //        {
+        //            fileLength -= lastPacket;
+        //            double tempLastPcaket = ((double)lastPacket / 4);
+        //            lastPacket = (int)(Math.Ceiling(tempLastPcaket) * 4);
+        //            fileLength += lastPacket;
+        //        }
+        //        byte[] encodedZipFile = new byte[fileLength];
+
+        //        if (recivedData[0] == (byte)0x00)
+        //        {
+        //            for (int i = 0; i < fileLength; i += packetSize)
+        //            {
+        //                count = i == (fileLength - lastPacket) ? BitConverter.GetBytes(lastPacket) : BitConverter.GetBytes(packetSize);
+
+        //                byte[] requestID = BitConverter.GetBytes(gvcpRequestID);
+        //                byte[] tempFileAddress = BitConverter.GetBytes(fileAddress + i);
+
+        //                if (BitConverter.IsLittleEndian)
+        //                {
+        //                    Array.Reverse(tempFileAddress);
+        //                    Array.Reverse(requestID);
+        //                    Array.Reverse(count);
+        //                }
+
+        //                byte[] readFileHeader = { 0x42, 0x01, 0x00, 0x84, 0x00, 0x08,
+        //                        requestID[0], requestID[1],
+        //                        tempFileAddress[0], tempFileAddress[1], tempFileAddress[2], tempFileAddress[3],
+        //                        count[0], count[1], count[2], count[3] };
+        //                client.Send(readFileHeader, readFileHeader.Length);
+
+        //                recivedData = client.Receive(ref server);
+
+        //                if (recivedData[0] == (byte)0x00)
+        //                {
+        //                    Array.Copy(recivedData, 12, encodedZipFile, i, recivedData.Length - 12);
+        //                    gvcpRequestID++;
+        //                }
+        //                else
+        //                    break;
+        //            }
+        //        }
+        //        return (encodedZipFile, fileName);
+        //    }).ConfigureAwait(false);
+        //}
+
+        private async Task<(byte[] data, string fileName)> GetRawXmlFileFromCamera(string IP)
+        {
+            return await Task.Run(() =>
+            {
+                UdpClient client = new UdpClient();
+                client.Client.ReceiveTimeout = 1000;
+                //connecting to the server
+                client.Connect(IP, PortGvcp);
+                byte[] commandCCP = new byte[] { 0x42, 0x00, 0x00, 0x82, 0x00, 0x08, 0x10, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x02 };
+                //sending the packet
+                //  client.Send(commandCCP, commandCCP.Length);
+                Task.Delay(100);
+                //preparing the header for sending
+                byte[] gvcpHeader = GetReadMessageHeader(0x0200); //GevFirstURL = 0x0200
+                                                                  //sending the packet
+                client.Send(gvcpHeader, gvcpHeader.Length);
+                gvcpRequestID++;
+                int packetSize = 512 + 24; //512 for the original payload size and 24  for  the header
+                byte[] count = { 0x02, 0x18 }; //Number of bytes to read from device memory it must be multiple of 4 bytes
+                IPEndPoint server = new IPEndPoint(IPAddress.Parse(IP), PortGvcp);
+                byte[] recivedData = client.Receive(ref server);
+                if (recivedData.Length < 12) throw new Exception("Access denied");
+                string localFile = Encoding.ASCII.GetString(recivedData, 12, recivedData.Length - 12);
+                var (fileName, fileAddress, fileLength) = GetFileDetails(localFile);
+                //finding the last packet length
+                var lastPacket = (fileLength % packetSize);
+                if (lastPacket % 4 != 0)
+                {
+                    fileLength -= lastPacket;
+                    double tempLastPcaket = ((double)lastPacket / 4);
+                    lastPacket = (int)(Math.Ceiling(tempLastPcaket) * 4);
+                    fileLength += lastPacket;
+                }
+                byte[] encodedZipFile = new byte[fileLength];
+                if (recivedData[0] == (byte)0x00)
+                {
+                    for (int i = 0; i < fileLength; i += packetSize)
+                    {
+                        count = i == (fileLength - lastPacket) ? BitConverter.GetBytes(lastPacket) : BitConverter.GetBytes(packetSize);
+                        byte[] requestID = BitConverter.GetBytes(gvcpRequestID);
+                        byte[] tempFileAddress = BitConverter.GetBytes(fileAddress + i);
+                        if (BitConverter.IsLittleEndian)
+                        {
+                            Array.Reverse(tempFileAddress);
+                            Array.Reverse(requestID);
+                            Array.Reverse(count);
+                        }
+                        byte[] readFileHeader = { 0x42, 0x01, 0x00, 0x84, 0x00, 0x08,
+                        requestID[0], requestID[1],
+                        tempFileAddress[0], tempFileAddress[1], tempFileAddress[2], tempFileAddress[3],
+                        count[0], count[1], count[2], count[3] };
+                        client.Send(readFileHeader, readFileHeader.Length);
+                        recivedData = client.Receive(ref server);
+                        if (recivedData[0] == (byte)0x00)
+                        {
+                            Array.Copy(recivedData, 12, encodedZipFile, i, recivedData.Length - 12);
+                            gvcpRequestID++;
+                        }
+                        else
+                            break;
+                    }
+                }
+
+                // Clean the data before returning (only for XML files)
+                byte[] cleanedData = CleanRawData(encodedZipFile, fileName);
+
+                return (cleanedData, fileName);
+            }).ConfigureAwait(false);
+        }
+
+        private byte[] CleanRawData(byte[] data, string fileName)
+        {
+            // Only clean XML files, leave ZIP files as-is
+            if (fileName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            {
+                // Find the last non-null, non-problematic byte
+                int lastValidIndex = data.Length - 1;
+                while (lastValidIndex >= 0 &&
+                       (data[lastValidIndex] == 0x00 ||  // null bytes
+                        data[lastValidIndex] == 0x0D ||  // carriage return
+                        data[lastValidIndex] == 0x0A ||  // line feed
+                        data[lastValidIndex] == 0x20))   // space
+                {
+                    lastValidIndex--;
+                }
+
+                // If we found a valid ending, create a trimmed array
+                if (lastValidIndex < data.Length - 1 && lastValidIndex >= 0)
+                {
+                    byte[] cleanedData = new byte[lastValidIndex + 1];
+                    Array.Copy(data, cleanedData, lastValidIndex + 1);
+                    return cleanedData;
+                }
+            }
+
+            // Return original data if no cleaning needed or if not XML
+            return data;
+        }
+
+
+        /// <summary>
+        /// Clean the XML data by removing null bytes and whitespace characters
+        /// </summary>
+        /// <param name="data"></param>
+        /// <returns></returns>
+        private byte[] CleanXmlData(byte[] data)
+        {
+            // Find the last non-null, non-whitespace byte
+            int lastValidIndex = data.Length - 1;
+            while (lastValidIndex >= 0 && (data[lastValidIndex] == 0x00 || data[lastValidIndex] == 0x0D || data[lastValidIndex] == 0x0A || data[lastValidIndex] == 0x20))
+            {
+                lastValidIndex--;
+            }
+
+            // Create a new array with only the valid data
+            byte[] cleanedData = new byte[lastValidIndex + 1];
+            Array.Copy(data, cleanedData, lastValidIndex + 1);
+            return cleanedData;
+        }
+
         private async Task<Stream> GetXmlFileFromCamera(string ip)
         {
             // initializing the variables
@@ -959,7 +1167,10 @@ namespace GigeVision.Core.Services
                 switch (fileNameParts[fileNameParts.Length - 1])
                 {
                     case "xml":
-                        xmlFile = new MemoryStream(fileData);
+                        // Clean null bytes and other invalid characters from the end
+                        byte[] cleanedData = CleanXmlData(fileData);
+                        xmlFile = new MemoryStream(cleanedData);
+                        // xmlFile = new MemoryStream(fileData);
                         break;
 
                     case "zip":
@@ -1013,17 +1224,18 @@ namespace GigeVision.Core.Services
 
                 if (category.PFeatures != null)
                     await ReadAllRegisters(category.PFeatures);
-                if (!RegistersDictionary.ContainsKey(category.CategoryProperties.Name))
+
+                if (category.CategoryProperties != null &&
+                    !RegistersDictionary.ContainsKey(category.CategoryProperties.Name))
                 {
                     (IPValue, IRegister) tuple = new(null, null);
+
                     if (category.PValue is IPValue pValue)
-                    {
                         tuple.Item1 = pValue;
-                    }
+
                     if (category.PValue is IRegister register)
-                    {
                         tuple.Item2 = register;
-                    }
+
                     RegistersDictionary.Add(category.CategoryProperties.Name, tuple);
                 }
             }

@@ -1,7 +1,7 @@
 ﻿using GenICam;
 using GigeVision.Core.Enums;
 using GigeVision.Core.Interfaces;
-using GigeVision.Core.Models;
+using GigeVision.Core.Services;
 using Prism.Commands;
 using Prism.Mvvm;
 using System.Collections.Generic;
